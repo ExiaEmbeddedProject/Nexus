@@ -1,3 +1,4 @@
+#include <avr/pgmspace.h>
 // Multithreading
 #include <ChibiOS_AVR.h>
 // Temperature & Humidity
@@ -16,9 +17,10 @@ PetitSerial PS;
 #define Serial PS
 FATFS fs;
 
-float data[8];
+float data[11];
 int line = 0;
 int file = 0;
+long id = 0;
 uint8_t buf[32];
 
 static THD_WORKING_AREA(waThread1, 64);
@@ -37,8 +39,8 @@ static THD_FUNCTION(Thread1 ,arg) {
       Serial.println("Failed to read from DHT sensor!");
       continue;
     }
-    Serial.print("hum: ");
-    Serial.println(humidity);
+    //Serial.print("hum: ");
+    //Serial.println(humidity);
     data[0] = humidity;
   }
 }
@@ -70,15 +72,15 @@ static THD_FUNCTION(Thread2, arg) {
     data[5] = Wire.read()<<8|Wire.read();  // 0x43 (GYRO_XOUT_H) & 0x44 (GYRO_XOUT_L)
     data[6] = Wire.read()<<8|Wire.read();  // 0x45 (GYRO_YOUT_H) & 0x46 (GYRO_YOUT_L)
     data[7] = Wire.read()<<8|Wire.read();  // 0x47 (GYRO_ZOUT_H) & 0x48 (GYRO_ZOUT_L)
-    Serial.print("temp: ");
-    Serial.println(data[1]);
+    //Serial.print("temp: ");
+    //Serial.println(data[1]);
   }
 }
 
 void setup() {
   Serial.begin(9600);
   Serial.println("Initialized."); 
-
+  if (pf_mount(&fs)) errorHalt("pf_mount");
   chBegin(mainThread);
 }
 
@@ -96,34 +98,93 @@ void mainThread() {
   
   Serial.println("Starting Thread 2..."); 
   chThdCreateStatic(waThread2, sizeof(waThread2), NORMALPRIO + 1, Thread2, NULL);
+
+  if (pf_open("FOO.BAR")) errorHalt("pf_open");
+  
+  while (1) {
+    chThdSleepMilliseconds(5000);
+    printFile();
+    saveInFile();
+  }
 }
 
 void loop() {}
 
-void saveInFile(char* data) {
-    line++;
-    if (line == 3000) {
-      file++;
-      line = 0;
-    }
+char* dataToChar() {
+  String str =  " {\"id\":\"";
+  str +=        id++;
+  str +=        "\",";
+  str +=        "\"DateHeure\": ,";
+  str +=        "\"Latitude\": ,";
+  str +=        "\"Longitude\": ,";
+  str +=        "\"Gyro_x\":" + String(data[5]) + ",";
+  str +=        "\"Gyro_y\":" + String(data[6]) + ",";
+  str +=        "\"Gyro_z\":" + String(data[7]) + ",";
+  str +=        "\"Accel_x\":" + String(data[2]) + ",";
+  str +=        "\"Accel_y\":" + String(data[3]) + ",";
+  str +=        "\"Accel_z\":" + String(data[4]) + ",";
+  str +=        "\"Temperature\": " + String(data[1]) + ",";
+  str +=        "\"Humidite\": " + String(data[0]) + ",";
+  str +=        "},";
+  char c[str.length()+1];
+  str.toCharArray(c, str.length()+1);
+  return c;
+}
 
-    String date = ""; // TODO
-    String filename = date + "_" + String(file) + ".json";
-    char fn[filename.length()+1];
-    filename.toCharArray(fn, filename.length()+1);
+void saveInFile() {
+  id++;
+  line++;
+  if (line == 3000) {
+    file++;
+    line = 0;
+  }
 
-    if (pf_mount(&fs)) errorHalt("pf_mount");
-    if (pf_open(fn)) errorHalt("pf_open");
+  UINT nr;
 
-    UINT nr;
+  char buff[512];
+  char* strData =  dataToChar();
+  long filesize = getFileLengthBytes();
+
+  //sprintf_P(buff, PSTR(dataToChar()));
   
-    pf_lseek(0);
-    pf_write(buf, sizeof(buf), &nr);
+  pf_lseek(0);
+  do {
+    pf_write(strData, 8, &nr);
+    Serial.print("Wrote: ");
+    Serial.println(nr);
+  }while(nr == 8);
+  pf_write(0, 0, &nr);
+}
 
-    if (nr == 0) {
-      pf_write(0, 0, &nr);
-      return;
-    }
-    
+long getFileLengthBytes() {
+  pf_lseek(0);
+  long length = 0;
+  while (1) {
+    UINT nr;
+    if (pf_read(buf, sizeof(buf), &nr)) errorHalt("pf_read");
+    if (nr == 0) break;
+    length += nr;
+  }
+
+  return length;
+}
+
+void printFile() {
+  pf_lseek(0);
+  Serial.println("------------------");
+  Serial.print("Name: ");
+  Serial.println("FOO.BAR");
+  Serial.print("Content: ");
+  long length = 0;
+  while (1) {
+    UINT nr;
+    if (pf_read(buf, sizeof(buf), &nr)) errorHalt("pf_read");
+    if (nr == 0) break;
+    length += nr;
+    Serial.write(buf, nr);
+  }
+  Serial.print("Size:");
+  Serial.println(length);
+  Serial.println("------------------");
 }
 
