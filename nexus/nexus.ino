@@ -1,190 +1,200 @@
-#include <avr/pgmspace.h>
-// Multithreading
-#include <ChibiOS_AVR.h>
-// Temperature & Humidity
+// Humidity sensor
 #include "DHT.h"
 // Gyro
 #include<Wire.h>
-// SD read/write
-#include "PetitFS.h"
-#include "PetitSerial.h"
+// GPS
+#include "TinyGPS++.h"
+#include <SoftwareSerial.h>
 
-#define TERMOMETER_PIN 4
-#define TERMOMETER_TYPE DHT22
-#define SD_PIN 10
 
-PetitSerial PS;
-#define Serial PS
-FATFS fs;
+#define HUMIDITY_PIN 4
+#define HUMIDITY_TYPE DHT22
+#define MPU 0x68
+#define MAX_FILE_ENTRIES 3000
+#define GPS_BAUD 4800
+#define GPS_RXP_IN 4
+#define GPS_TXP_IN 3
+#define FREQUENCY 0.2 // Hz
 
-float data[11];
-int line = 0;
-int file = 0;
+
+// Humidity sensor
+DHT dht(HUMIDITY_PIN, HUMIDITY_TYPE);
+// GPS
+TinyGPSPlus gps;
+SoftwareSerial ss(GPS_RXP_IN, GPS_TXP_IN);
+
+
 long id = 0;
-uint8_t buf[32];
+int lineNumber = 0;
+int fileNumber = 1;
+char fileName[50];
+char json[200];
 
-static THD_WORKING_AREA(waThread1, 64);
-static THD_FUNCTION(Thread1 ,arg) {
-  Serial.println("Thread 1 started."); 
+int humidity;
+float temperature;
+float gyro[3];
+float accel[3];
+float latitude;
+float longitude;
+float speed; // km/h
+TinyGPSDate date;
+TinyGPSTime time;
 
-  DHT dht(TERMOMETER_PIN, TERMOMETER_TYPE); // temp & humidity
-  dht.begin();
-  float humidity;
-  
-  while(1) {
-    chThdSleepMilliseconds(4000);
-    humidity = dht.readHumidity();
-  
-    if (isnan(humidity)) {
-      Serial.println("Failed to read from DHT sensor!");
-      continue;
-    }
-    //Serial.print("hum: ");
-    //Serial.println(humidity);
-    data[0] = humidity;
-  }
+
+void updateJson() {
+  sprintf(json, "%s", "{\"DATA\":[]}");
 }
 
+void printInfos() {
+  Serial.println("------------------------");
+  
+  Serial.println("----FILE----");
+  
+  Serial.print("Id: ");
+  Serial.println(id);
+  Serial.print("LineNumber: ");
+  Serial.println(lineNumber);
+  Serial.print("FileNumber: ");
+  Serial.println(fileNumber);
+  Serial.print("FileName: ");
+  Serial.println(fileName);
+  
+  Serial.println("---SENSOR---");
+  
+  Serial.print("Date: ");
+  Serial.print(date.year(), DEC);
+  Serial.print('/');
+  Serial.print(date.month(), DEC);
+  Serial.print('/');
+  Serial.print(date.day(), DEC);
+  Serial.print(' ');
+  Serial.print(time.hour(), DEC);
+  Serial.print(':');
+  Serial.print(time.minute(), DEC);
+  Serial.print(':');
+  Serial.print(time.second(), DEC);
+  Serial.print('.');
+  Serial.print(time.centisecond(), DEC);
+  Serial.println();
+  
+  Serial.print("Humidity: ");
+  Serial.print(humidity);
+  Serial.println("%");
+  
+  Serial.print("Temperature: ");
+  Serial.print(temperature);
+  Serial.println("°c");
+  
+  Serial.println("Gyro: ");
+  Serial.print("   x: ");
+  Serial.println(gyro[0]);
+  Serial.print("   y: ");
+  Serial.println(gyro[1]);
+  Serial.print("   z: ");
+  Serial.println(gyro[2]);
+  
+  Serial.println("Acceleration: ");
+  Serial.print("   x: ");
+  Serial.println(accel[0]);
+  Serial.print("   y: ");
+  Serial.println(accel[1]);
+  Serial.print("   z: ");
+  Serial.println(accel[2]);
 
-static THD_WORKING_AREA(waThread2, 64);
-static THD_FUNCTION(Thread2, arg) {
-  Serial.println("Thread 2 started.");
+  Serial.println("GPS: ");
+  Serial.print("   lat: ");
+  Serial.println(latitude);
+  Serial.print("   lng: ");
+  Serial.println(longitude);
+  Serial.print("   speed: ");
+  Serial.print(speed);
+  Serial.println("km/h");
+}
 
-  int MPU=0x68; // I2C address of the MPU-6050
-  int16_t AcX,AcY,AcZ,Tmp,GyX,GyY,GyZ;
+void writeInFile() {
+  
+}
 
+void initHumidity() {
+  dht.begin();
+}
+
+void initGyro() {
   Wire.begin();
   Wire.beginTransmission(MPU);
-  Wire.write(0x6B); // PWR_MGMT_1 register
-  Wire.write(0); // set to zero (wakes up the MPU-6050)
+  Wire.write(0x6B);
+  Wire.write(0);
   Wire.endTransmission(true);
+}
 
-  while(1) {
-    chThdSleepMilliseconds(2000);
-    Wire.beginTransmission(MPU);
-    Wire.write(0x3B);  // starting with register 0x3B (ACCEL_XOUT_H)
-    Wire.endTransmission(false);
-    Wire.requestFrom(MPU,14,true);  // request a total of 14 registers
-    data[2] = Wire.read()<<8|Wire.read();  // 0x3B (ACCEL_XOUT_H) & 0x3C (ACCEL_XOUT_L)    
-    data[3] = Wire.read()<<8|Wire.read();  // 0x3D (ACCEL_YOUT_H) & 0x3E (ACCEL_YOUT_L)
-    data[4] = Wire.read()<<8|Wire.read();  // 0x3F (ACCEL_ZOUT_H) & 0x40 (ACCEL_ZOUT_L)
-    data[1] = (Wire.read()<<8|Wire.read()) / 340.00 + 36.53;  // 0x41 (TEMP_OUT_H) & 0x42 (TEMP_OUT_L)
-    data[5] = Wire.read()<<8|Wire.read();  // 0x43 (GYRO_XOUT_H) & 0x44 (GYRO_XOUT_L)
-    data[6] = Wire.read()<<8|Wire.read();  // 0x45 (GYRO_YOUT_H) & 0x46 (GYRO_YOUT_L)
-    data[7] = Wire.read()<<8|Wire.read();  // 0x47 (GYRO_ZOUT_H) & 0x48 (GYRO_ZOUT_L)
-    //Serial.print("temp: ");
-    //Serial.println(data[1]);
+void initGps() {
+  ss.begin(GPS_BAUD);
+}
+
+void update() {
+  id++;
+  lineNumber++;
+  if (lineNumber == MAX_FILE_ENTRIES) {
+    fileNumber++;
+    lineNumber = 0;
+  }
+  if (lineNumber == MAX_FILE_ENTRIES || id == 1) sprintf(fileName, "%s%06d%s", "04", fileNumber, ".txt");
+}
+
+void updateHumidity() {
+  humidity = dht.readHumidity();
+}
+
+void updateGyro() {
+  Wire.beginTransmission(MPU);
+  Wire.write(0x3B);
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU,14,true);
+  accel[0] = Wire.read()<<8|Wire.read();  // (ACCEL_XOUT_L)    
+  accel[1] = Wire.read()<<8|Wire.read();  // (ACCEL_YOUT_L)
+  accel[2] = Wire.read()<<8|Wire.read();  // (ACCEL_ZOUT_L)
+  temperature = (Wire.read()<<8|Wire.read()) / 340.00 + 36.53;  // (TEMP_OUT_L)
+  gyro[0] = Wire.read()<<8|Wire.read();  // (GYRO_XOUT_L)
+  gyro[1] = Wire.read()<<8|Wire.read();  // (GYRO_YOUT_L)
+  gyro[2] = Wire.read()<<8|Wire.read();  // (GYRO_ZOUT_L)
+}
+
+void updateGps() {
+  if(gps.location.isValid()) {
+    latitude = gps.location.lat();
+    longitude = gps.location.lng();
+    speed = gps.speed.kmph();
+    date = gps.date;
+    time = gps.time;
   }
 }
 
 void setup() {
   Serial.begin(9600);
-  Serial.println("Initialized."); 
-  if (pf_mount(&fs)) errorHalt("pf_mount");
-  chBegin(mainThread);
+  initHumidity();
+  initGyro();
+  initGps();
+  Serial.println("Initialized");
 }
 
-void errorHalt(char* msg) {
-  Serial.print("Error: ");
-  Serial.println(msg);
-  while(1);
+void loop() {
+  update();
+  updateHumidity();
+  updateGyro();
+  updateGps();
+  printInfos();
+  writeInFile();
+  smartDelay(1/FREQUENCY*1000);
+  if (millis() > 5000 && gps.charsProcessed() < 10)
+    Serial.println(F("/!\\ No GPS data received, check wiring /!\\"));
 }
 
-void mainThread() {
-  Serial.println("Main thread started."); 
-  
-  Serial.println("Starting Thread 1..."); 
-  chThdCreateStatic(waThread1, sizeof(waThread1), NORMALPRIO + 1, Thread1, NULL);
-  
-  Serial.println("Starting Thread 2..."); 
-  chThdCreateStatic(waThread2, sizeof(waThread2), NORMALPRIO + 1, Thread2, NULL);
-
-  if (pf_open("FOO.BAR")) errorHalt("pf_open");
-  
-  while (1) {
-    chThdSleepMilliseconds(5000);
-    printFile();
-    saveInFile();
-  }
+static void smartDelay(unsigned long ms)
+{
+  unsigned long start = millis();
+  do 
+  {
+    while (ss.available())
+      gps.encode(ss.read());
+  } while (millis() - start < ms);
 }
-
-void loop() {}
-
-char* dataToChar() {
-  String str =  " {\"id\":\"";
-  str +=        id++;
-  str +=        "\",";
-  str +=        "\"DateHeure\": ,";
-  str +=        "\"Latitude\": ,";
-  str +=        "\"Longitude\": ,";
-  str +=        "\"Gyro_x\":" + String(data[5]) + ",";
-  str +=        "\"Gyro_y\":" + String(data[6]) + ",";
-  str +=        "\"Gyro_z\":" + String(data[7]) + ",";
-  str +=        "\"Accel_x\":" + String(data[2]) + ",";
-  str +=        "\"Accel_y\":" + String(data[3]) + ",";
-  str +=        "\"Accel_z\":" + String(data[4]) + ",";
-  str +=        "\"Temperature\": " + String(data[1]) + ",";
-  str +=        "\"Humidite\": " + String(data[0]) + ",";
-  str +=        "},";
-  char c[str.length()+1];
-  str.toCharArray(c, str.length()+1);
-  return c;
-}
-
-void saveInFile() {
-  id++;
-  line++;
-  if (line == 3000) {
-    file++;
-    line = 0;
-  }
-
-  UINT nr;
-
-  char buff[512];
-  char* strData =  dataToChar();
-  long filesize = getFileLengthBytes();
-
-  //sprintf_P(buff, PSTR(dataToChar()));
-  
-  pf_lseek(0);
-  do {
-    pf_write(strData, 8, &nr);
-    Serial.print("Wrote: ");
-    Serial.println(nr);
-  }while(nr == 8);
-  pf_write(0, 0, &nr);
-}
-
-long getFileLengthBytes() {
-  pf_lseek(0);
-  long length = 0;
-  while (1) {
-    UINT nr;
-    if (pf_read(buf, sizeof(buf), &nr)) errorHalt("pf_read");
-    if (nr == 0) break;
-    length += nr;
-  }
-
-  return length;
-}
-
-void printFile() {
-  pf_lseek(0);
-  Serial.println("------------------");
-  Serial.print("Name: ");
-  Serial.println("FOO.BAR");
-  Serial.print("Content: ");
-  long length = 0;
-  while (1) {
-    UINT nr;
-    if (pf_read(buf, sizeof(buf), &nr)) errorHalt("pf_read");
-    if (nr == 0) break;
-    length += nr;
-    Serial.write(buf, nr);
-  }
-  Serial.print("Size:");
-  Serial.println(length);
-  Serial.println("------------------");
-}
-
