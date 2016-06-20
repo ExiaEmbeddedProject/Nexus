@@ -47,6 +47,7 @@ void writeInitialStructure() {
   writeInFile(F("{\"DATA\":[]}"), false, false);
 }
 
+
 void writeData() {
   writeInFile(F("{\"id\":\""), true, true);
   writeInFile((String)(id), true, false);
